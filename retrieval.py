@@ -14,8 +14,7 @@ from config import Config
 import cohere
 import ast
 from pathlib import Path
-import sqlite3
-import tempfile
+import asyncio
 
 
 # Configure logging
@@ -677,6 +676,12 @@ class HybridRetriever:
             except Exception as e2:
                 logger.error(f"Fallback retrieval also failed: {e2}")
                 return []
+        
+        
+        # Store results for evaluation (store in orchestrator if needed)
+        if hasattr(self, 'orchestrator'):
+            self.orchestrator._last_retrieval_results = results
+            
         # Post-process results to remove duplicates and improve formatting
         return self._post_process_results(results, query_analysis, top_k, display_mode)
 
@@ -1757,6 +1762,104 @@ def _display_results(results: List[RetrievalResult], query: str, show_all_column
             print(f"     Relevance: {result.relevance_explanation}")
         
         print("-" * 40)
+
+
+def evaluate_rag_system_batch(test_queries: List[Dict[str, Any]], orchestrator) -> Dict[str, Any]:
+    """Batch evaluate RAG system performance"""
+    
+    results = []
+    total_metrics = {
+        'hallucination_score': 0,
+        'relevance_score': 0,
+        'completeness_score': 0,
+        'accuracy_score': 0,
+        'overall_score': 0
+    }
+    
+    for test_case in test_queries:
+        query = test_case['query']
+        expected_answer = test_case.get('expected_answer')
+        
+        # Process query
+        result = asyncio.run(orchestrator.process_query_with_evaluation(query))
+        
+        # Accumulate metrics
+        eval_metrics = result.get('evaluation', {})
+        for metric in total_metrics:
+            total_metrics[metric] += eval_metrics.get(metric, 0)
+        
+        results.append({
+            'query': query,
+            'answer': result.get('answer'),
+            'strategy': result.get('strategy'),
+            'metrics': eval_metrics,
+            'sources_count': len(result.get('sources', []))
+        })
+    
+    # Calculate averages
+    num_queries = len(test_queries)
+    avg_metrics = {k: v / num_queries for k, v in total_metrics.items()}
+    
+    return {
+        'individual_results': results,
+        'average_metrics': avg_metrics,
+        'total_queries': num_queries
+    }
+
+# 6. Add this enhanced testing function
+
+def test_with_evaluation():
+    """Test function with evaluation capabilities"""
+    
+    async def _run():
+        from retrieval import HybridRetriever
+        from generation import CohereLLMClient, SmartGenerationOrchestrator
+        
+        retriever = HybridRetriever()
+        llm_client = CohereLLMClient()
+        orchestrator = SmartGenerrationOrchestrator(retriever, llm_client)
+        orchestrator.session_id = "test_session_1"
+        
+        test_queries = [
+            "show cartons with taxes foncieres",
+            "count total users in the system",
+            "what is document management in general"
+        ]
+        
+        print("Testing RAG System with Evaluation")
+        print("=" * 50)
+        
+        for query in test_queries:
+            print(f"\nQuery: {query}")
+            
+            # Process with evaluation
+            result = await orchestrator.process_query_with_evaluation(query)
+            
+            print(f"Answer: {result.get('answer', '')[:200]}...")
+            print(f"Strategy: {result.get('strategy')}")
+            
+            # Show evaluation metrics
+            eval_metrics = result.get('evaluation', {})
+            print(f"Evaluation Scores:")
+            print(f"  Hallucination: {eval_metrics.get('hallucination_score', 0):.2f}")
+            print(f"  Relevance: {eval_metrics.get('relevance_score', 0):.2f}")
+            print(f"  Completeness: {eval_metrics.get('completeness_score', 0):.2f}")
+            print(f"  Accuracy: {eval_metrics.get('accuracy_score', 0):.2f}")
+            print(f"  Overall: {eval_metrics.get('overall_score', 0):.2f}")
+            
+            # Simulate user feedback
+            feedback_type = input(f"Feedback for this answer (thumbs_up/thumbs_down/skip): ").strip()
+            if feedback_type in ["thumbs_up", "thumbs_down"]:
+                feedback_details = input("Optional feedback details: ").strip()
+                orchestrator.collect_user_feedback(
+                    query, 
+                    result.get('answer', ''), 
+                    feedback_type,
+                    feedback_details if feedback_details else None
+                )
+                print("Feedback logged!")
+    
+    asyncio.run(_run())
 
 def interactive_query_session():
     """Start an interactive query session"""

@@ -1,5 +1,6 @@
 import os
 from dotenv import load_dotenv
+from langsmith import Client  # Ensure correct import
 
 load_dotenv()
 
@@ -95,6 +96,14 @@ class Config:
     WEB_SEARCH_TIMEOUT = 10            # Timeout for web search requests
     COMBINE_RAG_AND_WEB = True         # Allow hybrid RAG + web search
     
+    # LangSmith Configuration
+    LANGSMITH_TRACING="true"
+    LANGSMITH_ENDPOINT="https://api.smith.langchain.com"
+    LANGSMITH_API_KEY="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"
+    LANGSMITH_PROJECT="sql RAG"
+    
+
+    
     @classmethod
     def get_strategy_config(cls) -> dict:
         """Get all strategy-related configuration as a dictionary"""
@@ -105,7 +114,7 @@ class Config:
             'min_high_conf': cls.MIN_HIGH_CONF_RESULTS,
             'min_medium_conf': cls.MIN_MEDIUM_CONF_RESULTS,
             'max_context_docs': cls.MAX_CONTEXT_DOCS,
-            'temporal_keywords': cls.TEMPORAL_KEYWORDS,
+            'temporal_keywords  ': cls.TEMPORAL_KEYWORDS,
             'current_info_domains': cls.CURRENT_INFO_DOMAINS
         }
     
@@ -118,6 +127,9 @@ class Config:
         if not cls.COHERE_API_KEY or cls.COHERE_API_KEY == "your_api_key_here":
             issues.append("COHERE_API_KEY not set")
         
+        # Check LangSmith key
+        if not cls.LANGSMITH_API_KEY or cls.LANGSMITH_API_KEY == "your_langsmith_api_key_here":
+            issues.append("LANGSMITH_API_KEY not set properly")
         # Check thresholds
         if not (0 <= cls.LOW_CONFIDENCE_THRESHOLD <= cls.MEDIUM_CONFIDENCE_THRESHOLD <= cls.HIGH_CONFIDENCE_THRESHOLD <= 1):
             issues.append("Confidence thresholds must be in ascending order between 0 and 1")
@@ -140,3 +152,5 @@ class Config:
             return False
         
         return True
+    
+langsmith_client = Client(api_key=Config.LANGSMITH_API_KEY)

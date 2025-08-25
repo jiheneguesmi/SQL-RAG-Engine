@@ -19,6 +19,7 @@ from pathlib import Path
 from retrieval import RetrievalResult, HybridRetriever , QueryRequest
 import time
 from pandasql import sqldf
+from evaluation import RAGEvaluator, UserFeedback
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +83,13 @@ class SmartGenerationOrchestrator:
         self.retriever = retriever
         self.llm_client = llm_client
         self.tavily_client = tavily_client
+        self.evaluator = RAGEvaluator()
+        self.session_id = None
+        
+         # Enhanced evaluator with feedback capability
+        from feedback_manager import EnhancedRAGEvaluator
+        self.evaluator = EnhancedRAGEvaluator()
+        self.session_id = f"session_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         
         # Updated thresholds based on your strategy
         self.HIGH_RELEVANCE_THRESHOLD = 0.75    # High relevance
@@ -761,15 +769,14 @@ While I don't have highly relevant specific information available, I'll provide 
                 "sources": metadata.get('relevant_tables', []),
                 "reasoning": f"Generated and executed SQL query: {sql_generation_result.explanation}",
                 "relevance_level": context.relevance_level,
+                "generated_sql": sql_generation_result.sql_query,  # Make sure this field exists
                 "sql_details": {
                     "query": sql_generation_result.sql_query,
                     "execution_time": sql_execution_result.execution_time,
                     "rows_returned": len(sql_execution_result.results) if sql_execution_result.success else 0,
-                    "tables_used": sql_generation_result.tables_used
-                },
-                "raw_results": sql_execution_result.results.to_dict('records') if sql_execution_result.success else [],
-                "generated_sql": sql_generation_result.sql_query
-            }
+                    "tables_used": sql_generation_result.tables_used,
+                    "success": sql_execution_result.success
+            } }
         
         else:
             # SQL execution failed, provide fallback response
@@ -926,7 +933,111 @@ Provide a comprehensive answer that aggregates or summarizes the relevant inform
                 "error": str(e),
                 "results": []
             }
+            
+        
+    # Replace the entire collect_user_feedback method in generation.py with this:
 
+    def collect_user_feedback(self, query: str, answer: str, feedback_type: str, 
+                            feedback_details: Optional[str] = None, run_id: Optional[str] = None) -> UserFeedback:
+        """Collect and log user feedback"""
+        logger.info(f"collect_user_feedback called with: query={query}, answer={answer}, feedback_type={feedback_type}, feedback_details={feedback_details}, run_id={run_id}")
+        
+        feedback = UserFeedback(
+            query=query,
+            answer=answer,
+            feedback_type=feedback_type,
+            feedback_details=feedback_details,
+            timestamp=datetime.now().isoformat(),
+            session_id=self.session_id,
+            run_id=run_id
+        )
+        
+        # Log to LangSmith
+        self.evaluator.log_user_feedback(feedback)
+        return feedback
+    
+    async def process_query_with_evaluation(self, query: str, top_k: int = 5) -> Dict[str, Any]:
+        """FIXED: Enhanced process_query with evaluation and logging"""
+        
+        try:
+            # Get retrieval results first
+            if hasattr(self.retriever, 'retrieve'):
+                retrieval_results = self.retriever.retrieve(query, top_k)
+            else:
+                retrieval_results = []
+            
+            # Store for evaluation
+            self._last_retrieval_results = retrieval_results
+            
+            # Get generation context and results
+            context = self.analyze_generation_context(query, retrieval_results)
+            result = await self.generate_response(context)
+            # result['query'] = query  # Add the original query to the response
+
+            
+            # Extract source materials for evaluation
+            source_materials = []
+            for retrieval_result in retrieval_results:
+                if hasattr(retrieval_result, 'content'):
+                    source_materials.append(retrieval_result.content)
+                elif hasattr(retrieval_result, 'formatted_content'):
+                    source_materials.append(retrieval_result.formatted_content)
+            
+            # Evaluate answer quality
+            metrics = self.evaluator.score_answer_quality(
+                query, 
+                result.get('answer', ''), 
+                source_materials
+            )
+            
+            # Add evaluation results to response
+            result['evaluation'] = {
+                'hallucination_score': metrics.hallucination_score,
+                'relevance_score': metrics.relevance_score,
+                'completeness_score': metrics.completeness_score,
+                'accuracy_score': metrics.accuracy_score,
+                'overall_score': metrics.overall_score,
+                'explanation': metrics.explanation,
+                'timestamp': metrics.timestamp
+            }
+            
+            # Enhanced generation context for logging
+            enhanced_context = result.get('generation_context', {})
+            enhanced_context.update({
+                'strategy': result.get('strategy', 'unknown'),
+                'confidence': result.get('confidence', 0.0),
+                'relevance_level': context.relevance_level if context else 'unknown',
+                'retrieval_method_counts': {},
+                'needs_current_info': getattr(context, 'needs_current_info', False),
+                'is_conceptual': getattr(context, 'is_conceptual', False),
+                'max_score': getattr(context, 'max_score', 0.0),
+                'content_relevance_score': getattr(context, 'content_relevance_score', 0.0)
+                
+            })
+            
+            # Count retrieval methods used
+            for r in retrieval_results:
+                method = getattr(r, 'retrieval_method', 'unknown')
+                enhanced_context['retrieval_method_counts'][method] = \
+                    enhanced_context['retrieval_method_counts'].get(method, 0) + 1
+            
+            # Log to LangSmith
+            run_id = self.evaluator.log_interaction_with_feedback_ready(
+                query=query,
+                answer=result.get('answer', ''),
+                sources=[getattr(r, 'source_table', 'unknown') for r in retrieval_results],
+                metrics=metrics,
+                generation_context=enhanced_context
+            )
+            # Add run_id to result for potential feedback linking
+            result['langsmith_run_id'] = run_id
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Query processing with evaluation failed: {e}")
+            # Return basic result without evaluation
+            return await self.process_query(query, top_k)
 def test_generation_orchestrator():
     """Test the updated strategy framework"""
     async def _run():
@@ -988,6 +1099,59 @@ def test_generation_orchestrator():
             except Exception as e:
                 print(f"Error processing query: {e}")
     asyncio.run(_run())
+    
+# Test function to verify LangSmith integration
+def test_langsmith_integration():
+    """Test LangSmith integration"""
+    
+    async def _run_test():
+        from retrieval import HybridRetriever
+        from generation import CohereLLMClient, SmartGenerationOrchestrator
+        
+        # Initialize components
+        retriever = HybridRetriever()
+        llm_client = CohereLLMClient()
+        orchestrator = SmartGenerationOrchestrator(retriever, llm_client)
+        orchestrator.session_id = "test_langsmith_integration"
+        
+        # Test queries
+        test_queries = [
+            "show cartons with taxes foncieres",
+            "count total documents",
+            "what is document management"
+        ]
+        
+        print("🚀 Testing LangSmith Integration")
+        print("=" * 50)
+        
+        for i, query in enumerate(test_queries, 1):
+            print(f"\n{i}. Testing query: '{query}'")
+            
+            try:
+                # Process with evaluation
+                result = await orchestrator.process_query_with_evaluation(query)
+                
+                # Show results
+                print(f"   ✅ Answer generated ({len(result.get('answer', ''))} chars)")
+                print(f"   📊 Strategy: {result.get('strategy', 'unknown')}")
+                
+                # Show evaluation
+                eval_metrics = result.get('evaluation', {})
+                print(f"   🎯 Overall Score: {eval_metrics.get('overall_score', 0):.2f}")
+                print(f"   🔍 Relevance: {eval_metrics.get('relevance_score', 0):.2f}")
+                print(f"   ✨ Accuracy: {eval_metrics.get('accuracy_score', 0):.2f}")
+                
+                # Show LangSmith info
+                run_id = result.get('langsmith_run_id')
+                if run_id:
+                    print(f"   📝 LangSmith Run ID: {run_id}")
+                else:
+                    print("   ⚠️  LangSmith logging failed")
+                    
+            except Exception as e:
+                print(f"   ❌ Test failed: {e}")
+    
+    asyncio.run(_run_test())
 
 if __name__ == "__main__":
     test_generation_orchestrator()
