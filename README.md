@@ -6,19 +6,19 @@ A sophisticated Retrieval-Augmented Generation (RAG) system designed for enterpr
 
 ## Key Features
 
-### 🔍 Hybrid Retrieval Engine
+###  Hybrid Retrieval Engine
 - **Semantic Search**: Vector-based similarity search using Cohere embeddings
 - **Structured Search**: Entity and keyword-based retrieval with relevance scoring
 - **Adaptive Strategy**: Automatically selects optimal retrieval method based on query analysis
 - **Multi-table Support**: Search across multiple CSV data sources simultaneously
 
-### 📊 Advanced Query Processing
+###  Advanced Query Processing
 - **Query Analysis**: Intelligent classification of query types (specific, aggregation, comparison)
 - **Entity Extraction**: Automatic identification of names, IDs, barcodes, emails, and dates
 - **SQL Generation**: LLM-powered SQL query generation for complex aggregations
 - **Table Selection**: Smart selection of relevant data sources for multi-table queries
 
-### 🛡️ Production-Ready Features
+###  Production-Ready Features
 - **Rate Limiting**: Built-in API quota management for Cohere services
 - **Error Handling**: Robust error recovery and fallback mechanisms
 - **Encoding Detection**: Automatic handling of various file encodings
