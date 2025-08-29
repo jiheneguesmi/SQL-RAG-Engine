@@ -86,9 +86,7 @@ class SmartGenerationOrchestrator:
         self.evaluator = RAGEvaluator()
         self.session_id = None
         
-         # Enhanced evaluator with feedback capability
-        from feedback_manager import EnhancedRAGEvaluator
-        self.evaluator = EnhancedRAGEvaluator()
+    
         self.session_id = f"session_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         
         # Updated thresholds based on your strategy
@@ -714,7 +712,7 @@ While I don't have highly relevant specific information available, I'll provide 
         if not sql_generation_result or not dataframes:
             return await self._generate_original_aggregation(context)
         
-        # Execute SQL query
+         # Execute SQL query ONCE
         sql_execution_result = self._execute_sql_query_on_dataframes(
             sql_generation_result.sql_query,
             dataframes
@@ -726,75 +724,47 @@ While I don't have highly relevant specific information available, I'll provide 
                 sql_execution_result, sql_generation_result, context.query
             )
             
-            # Enhance with LLM interpretation
-            enhancement_prompt = f"""
-            User asked: "{context.query}"
-            SQL Query Gnerated: {sql_generation_result.sql_query}
-            
-            Explanation: {sql_generation_result.explanation}
-            
-            SQL Analysis Results:
-            {business_formatted_answer}
-            
-           
-            
-            Provide a comprehensive business-friendly response that:
-            1. Shows the SQL query that was generated and executed
-            2. Answers the user's question clearly
-            3. Explains what the data shows
-            4. Provides any relevant insights or context
-            5. Uses business language, not technical jargon
-                
-             
-            Format your response like this:
-            
-            **SQL Query Generated:**
-            ```sql
-            {sql_generation_result.sql_query}
-            ```
-            
-            **Results:**
-            [Your analysis of the results]
-            
-            Keep it informative and show the SQL query prominently.
-            """
-            
-            enhanced_response = await self._call_llm(enhancement_prompt, context)
-            
+            # FIXED: Create final response WITHOUT calling LLM again
+            final_answer = f"""**SQL Query Generated:**
+    ```sql
+    {sql_generation_result.sql_query}
+    ```
+
+    **Results:**
+    {business_formatted_answer}
+
+    **Analysis:** {sql_generation_result.explanation}"""
             
             return {
-                "answer": enhanced_response,
+                "answer": final_answer,
                 "strategy": "SQL Aggregation",
                 "confidence": sql_generation_result.confidence,
                 "sources": metadata.get('relevant_tables', []),
                 "reasoning": f"Generated and executed SQL query: {sql_generation_result.explanation}",
                 "relevance_level": context.relevance_level,
-                "generated_sql": sql_generation_result.sql_query,  # Make sure this field exists
+                "generated_sql": sql_generation_result.sql_query,  
                 "sql_details": {
                     "query": sql_generation_result.sql_query,
                     "execution_time": sql_execution_result.execution_time,
                     "rows_returned": len(sql_execution_result.results) if sql_execution_result.success else 0,
                     "tables_used": sql_generation_result.tables_used,
                     "success": sql_execution_result.success
-            } }
+                },
+                # FIXED: Add raw results for UI display
+                "raw_results": sql_execution_result.results.to_dict('records') if sql_execution_result.success else [],
+                "aggregation_output": business_formatted_answer  # For UI display
+            }
         
         else:
             # SQL execution failed, provide fallback response
-            fallback_prompt = f"""
-            The user asked: "{context.query}"
-            Generated SQL Query: {sql_generation_result.sql_query}
-            
-            I attempted to analyze this using SQL but encountered an issue: {sql_execution_result.error_message}
-            
-            Based on the query intent and available information, provide the best answer you can about:
-            - What type of analysis they're looking for
-            - General insights about their question
-            - Suggestions for how they might get this information
-            
-            Be helpful and acknowledge the limitation.
-            """
-            
-            fallback_response = await self._call_llm(fallback_prompt, context)
+            fallback_response = f"""I attempted to analyze your query using SQL but encountered an issue: {sql_execution_result.error_message}
+
+    **Generated SQL Query:**
+    ```sql
+    {sql_generation_result.sql_query}
+    ```
+
+    Based on your question "{context.query}", you're looking for aggregated data analysis. The SQL query was generated correctly, but execution failed. Please check your data sources and try again."""
             
             return {
                 "answer": fallback_response,
@@ -803,10 +773,12 @@ While I don't have highly relevant specific information available, I'll provide 
                 "sources": [],
                 "reasoning": f"SQL execution failed: {sql_execution_result.error_message}",
                 "relevance_level": context.relevance_level,
+                "generated_sql": sql_generation_result.sql_query,
                 "sql_details": {
                     "query": sql_generation_result.sql_query,
                     "error": sql_execution_result.error_message,
-                    "tables_used": sql_generation_result.tables_used
+                    "tables_used": sql_generation_result.tables_used,
+                    "success": False
                 }
             }
     def _format_rag_context(self, results: List[Any]) -> str:
@@ -957,23 +929,31 @@ Provide a comprehensive answer that aggregates or summarizes the relevant inform
         return feedback
     
     async def process_query_with_evaluation(self, query: str, top_k: int = 5) -> Dict[str, Any]:
-        """FIXED: Enhanced process_query with evaluation and logging"""
+        """FIXED: Enhanced process_query with evaluation and logging - PREVENT DUPLICATE CALLS"""
         
         try:
-            # Get retrieval results first
+            # CRITICAL FIX: Call retrieve() only ONCE
+            logger.info(f"Processing query: {query}")
+            
             if hasattr(self.retriever, 'retrieve'):
                 retrieval_results = self.retriever.retrieve(query, top_k)
+                logger.info(f"Retrieved {len(retrieval_results)} results")
             else:
                 retrieval_results = []
+                logger.warning("Retriever has no retrieve method")
             
-            # Store for evaluation
+            # Store for evaluation (no additional retrieval calls)
             self._last_retrieval_results = retrieval_results
             
-            # Get generation context and results
+            # Get generation context and results - NO additional retrieval here
             context = self.analyze_generation_context(query, retrieval_results)
+            logger.info(f"Selected strategy: {context.strategy}")
+            
+            # Generate response - this should NOT call retrieval again
             result = await self.generate_response(context)
-            # result['query'] = query  # Add the original query to the response
-
+            
+            # Add query to result
+            result['query'] = query
             
             # Extract source materials for evaluation
             source_materials = []
@@ -983,23 +963,39 @@ Provide a comprehensive answer that aggregates or summarizes the relevant inform
                 elif hasattr(retrieval_result, 'formatted_content'):
                     source_materials.append(retrieval_result.formatted_content)
             
-            # Evaluate answer quality
-            metrics = self.evaluator.score_answer_quality(
-                query, 
-                result.get('answer', ''), 
-                source_materials
-            )
-            
-            # Add evaluation results to response
-            result['evaluation'] = {
-                'hallucination_score': metrics.hallucination_score,
-                'relevance_score': metrics.relevance_score,
-                'completeness_score': metrics.completeness_score,
-                'accuracy_score': metrics.accuracy_score,
-                'overall_score': metrics.overall_score,
-                'explanation': metrics.explanation,
-                'timestamp': metrics.timestamp
-            }
+            # FIXED: Only evaluate if we have the evaluator method
+            if hasattr(self.evaluator, 'score_answer_quality'):
+                try:
+                    metrics = self.evaluator.score_answer_quality(
+                        query, 
+                        result.get('answer', ''), 
+                        source_materials
+                    )
+                    
+                    # Add evaluation results to response
+                    result['evaluation'] = {
+                        'hallucination_score': metrics.hallucination_score,
+                        'relevance_score': metrics.relevance_score,
+                        'completeness_score': metrics.completeness_score,
+                        'accuracy_score': metrics.accuracy_score,
+                        'overall_score': metrics.overall_score,
+                        'explanation': metrics.explanation,
+                        'timestamp': metrics.timestamp
+                    }
+                    logger.info("Evaluation completed successfully")
+                    
+                except Exception as eval_error:
+                    logger.error(f"Evaluation failed: {eval_error}")
+                    # Continue without evaluation
+                    result['evaluation'] = {
+                        'error': str(eval_error),
+                        'note': 'Evaluation failed but query processing continued'
+                    }
+            else:
+                logger.warning("Evaluator does not have score_answer_quality method")
+                result['evaluation'] = {
+                    'note': 'Evaluation not available'
+                }
             
             # Enhanced generation context for logging
             enhanced_context = result.get('generation_context', {})
@@ -1012,7 +1008,6 @@ Provide a comprehensive answer that aggregates or summarizes the relevant inform
                 'is_conceptual': getattr(context, 'is_conceptual', False),
                 'max_score': getattr(context, 'max_score', 0.0),
                 'content_relevance_score': getattr(context, 'content_relevance_score', 0.0)
-                
             })
             
             # Count retrieval methods used
@@ -1021,16 +1016,39 @@ Provide a comprehensive answer that aggregates or summarizes the relevant inform
                 enhanced_context['retrieval_method_counts'][method] = \
                     enhanced_context['retrieval_method_counts'].get(method, 0) + 1
             
-            # Log to LangSmith
-            run_id = self.evaluator.log_interaction_with_feedback_ready(
-                query=query,
-                answer=result.get('answer', ''),
-                sources=[getattr(r, 'source_table', 'unknown') for r in retrieval_results],
-                metrics=metrics,
-                generation_context=enhanced_context
-            )
+            # Log to LangSmith if evaluation succeeded
+            # Log to LangSmith if evaluation succeeded
+            run_id = None
+            if 'evaluation' in result and 'error' not in result['evaluation']:
+                try:
+                    if hasattr(self.evaluator, 'log_interaction'):
+                        # Convert evaluation dict back to EvaluationMetrics object
+                        from evaluation import EvaluationMetrics
+                        eval_data = result['evaluation']
+                        metrics_obj = EvaluationMetrics(
+                            hallucination_score=eval_data['hallucination_score'],
+                            relevance_score=eval_data['relevance_score'],
+                            completeness_score=eval_data['completeness_score'],
+                            accuracy_score=eval_data['accuracy_score'],
+                            overall_score=eval_data['overall_score'],
+                            explanation=eval_data['explanation'],
+                            timestamp=eval_data['timestamp']
+                        )
+                    
+                        run_id = self.evaluator.log_interaction(
+                            query=query,
+                            answer=result.get('answer', ''),
+                            sources=[getattr(r, 'source_table', 'unknown') for r in retrieval_results],
+                            metrics=metrics_obj,
+                            generation_context=enhanced_context
+                        )
+                        logger.info(f"Logged to LangSmith with run_id: {run_id}")
+                except Exception as log_error:
+                    logger.error(f"LangSmith logging failed: {log_error}")
+
             # Add run_id to result for potential feedback linking
-            result['langsmith_run_id'] = run_id
+            if run_id:
+                result['langsmith_run_id'] = run_id
             
             return result
             
@@ -1038,6 +1056,65 @@ Provide a comprehensive answer that aggregates or summarizes the relevant inform
             logger.error(f"Query processing with evaluation failed: {e}")
             # Return basic result without evaluation
             return await self.process_query(query, top_k)
+    
+    def analyze_generation_context(self, query: str, retrieval_results: List[Any]) -> GenerationContext:
+        """FIXED: Comprehensive analysis - DO NOT call retrieval again"""
+        
+        # Basic metrics from RetrievalResult objects
+        max_score = max(r.score for r in retrieval_results) if retrieval_results else 0.0
+        avg_score = sum(r.score for r in retrieval_results) / len(retrieval_results) if retrieval_results else 0.0
+        result_count = len([r for r in retrieval_results if r.score > self.LOW_RELEVANCE_THRESHOLD])
+        
+        # Analysis methods
+        needs_current_info = self._detect_temporal_requirements(query)
+        is_conceptual = self._detect_conceptual_query(query)
+        is_specific_factual = self._detect_specific_factual_query(query)
+        content_relevance_score = self._assess_content_relevance(query, retrieval_results)
+        
+        # Determine relevance level
+        relevance_level = self._determine_relevance_level(max_score, content_relevance_score, result_count)
+        
+        # Query complexity analysis - CAREFUL HERE, don't trigger more retrieval
+        query_complexity = "simple"
+        entity_count = 0
+        
+        # FIXED: Check if query analyzer exists and is safe to call
+        if hasattr(self.retriever, 'query_analyzer') and retrieval_results:
+            try:
+                # Try to get analysis from existing results instead of calling analyzer again
+                first_result = retrieval_results[0]
+                if hasattr(first_result, 'metadata') and first_result.metadata:
+                    sql_gen_result = first_result.metadata.get('sql_generation_result')
+                    if sql_gen_result:
+                        query_complexity = "aggregation"
+                        logger.info("Detected aggregation from existing results")
+            except Exception as e:
+                logger.warning(f"Query analysis from results failed: {e}")
+        
+        # Strategy selection using your framework
+        strategy, confidence, reasoning = self._select_strategy_by_framework(
+            relevance_level, needs_current_info, is_conceptual, query,
+            max_score, content_relevance_score, result_count
+        )
+        
+        return GenerationContext(
+            query=query,
+            retrieval_results=retrieval_results,
+            max_score=max_score,
+            avg_score=avg_score,
+            result_count=result_count,
+            needs_current_info=needs_current_info,
+            is_conceptual=is_conceptual,
+            is_specific_factual=is_specific_factual,
+            content_relevance_score=content_relevance_score,
+            query_complexity=query_complexity,
+            entity_count=entity_count,
+            strategy=strategy,
+            confidence=confidence,
+            reasoning=reasoning,
+            relevance_level=relevance_level
+        )
+        
 def test_generation_orchestrator():
     """Test the updated strategy framework"""
     async def _run():
