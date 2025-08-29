@@ -68,7 +68,7 @@ logger = logging.getLogger(__name__)
 
 # Page configuration
 st.set_page_config(
-    page_title="Smart RAG System",
+    page_title="SQL RAG Query Engine",
     page_icon="🤖",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -212,7 +212,7 @@ st.markdown("""
 # Add navigation bar at the top
 st.markdown("""
 <div class="navbar">
-    <div class="navbar-logo">🤖 <span>Smart RAG System</span></div>
+    <div class="navbar-logo">🤖 <span>SQL RAG Query Engine</span></div>
     <div class="navbar-links">Professional Document Intelligence</div>
 </div>
 """, unsafe_allow_html=True)
@@ -328,7 +328,7 @@ st.markdown("""
 
 
 class StreamlitRAGApp:
-    """Streamlit application for the Smart RAG System"""
+    """Streamlit application for the SQL RAG Query Engine"""
     
     def __init__(self):
         self.orchestrator = None
@@ -395,7 +395,7 @@ class StreamlitRAGApp:
     
     def render_header(self):
         """Render the application header"""
-        st.markdown('<h1 class="main-header">🤖 Smart RAG System</h1>', unsafe_allow_html=True)
+        st.markdown('<h1 class="main-header">🤖 SQL RAG Query Engine</h1>', unsafe_allow_html=True)
         st.markdown("""
         <div style="text-align: center; margin-bottom: 2rem;">
             <p style="font-size: 1.2rem; color: #666;">
@@ -502,39 +502,81 @@ class StreamlitRAGApp:
         return query, submit_button
     
     def process_query_safe(self, query: str) -> Dict[str, Any]:
-        """Enhanced query processing with feedback tracking"""
+        """Enhanced query processing with feedback tracking and LangSmith metrics attachment"""
+        
+        # Check if we're already processing this exact query
+        query_hash = hash(query.strip().lower())
+        
+        if hasattr(self, '_processing_queries'):
+            if query_hash in self._processing_queries:
+                logger.warning(f"Query already being processed, skipping: {query}")
+                return {"answer": "Query already being processed...", "strategy": "Duplicate", "confidence": 0.0, "query": query}
+        else:
+            self._processing_queries = set()
+        
+        # Mark query as being processed
+        self._processing_queries.add(query_hash)
+        
         try:
             # Initialize session run tracking
             if not hasattr(self, 'session_run_ids'):
                 self.session_run_ids = []
             
-            # Process query with evaluation
+            logger.info(f"Starting to process query: {query}")
+            
+            # CRITICAL: Only call the orchestrator once
             if hasattr(self.orchestrator, 'process_query_with_evaluation'):
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                result = loop.run_until_complete(self.orchestrator.process_query_with_evaluation(query))
-                loop.close()
+                logger.info("Using process_query_with_evaluation")
                 
-                # Track run ID for feedback
-                run_id = result.get('langsmith_run_id')
-                if run_id and run_id not in self.session_run_ids:
-                    self.session_run_ids.append(run_id)
+                # Create new event loop for this specific query
+                try:
+                    loop = asyncio.get_event_loop()
+                    if loop.is_running():
+                        # If loop is already running, create a new one
+                        import concurrent.futures
+                        with concurrent.futures.ThreadPoolExecutor() as executor:
+                            future = executor.submit(
+                                lambda: asyncio.run(self.orchestrator.process_query_with_evaluation(query))
+                            )
+                            result = future.result(timeout=30)  # 30 second timeout
+                    else:
+                        result = loop.run_until_complete(self.orchestrator.process_query_with_evaluation(query))
+                except Exception as e:
+                    logger.error(f"Async execution failed: {e}")
+                    # Fallback to sync processing
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    result = loop.run_until_complete(self.orchestrator.process_query_with_evaluation(query))
+                    loop.close()
                 
-                # Add query to result for feedback
-                result['query'] = query
-                return result
+                # Attach LangSmith metrics if present in result
+                metrics = result.get('metrics')
+                if metrics and isinstance(metrics, dict):
+                    result['evaluation'] = metrics
+                elif metrics and hasattr(metrics, '__dict__'):
+                    result['evaluation'] = metrics.__dict__
                 
-            # Fallback methods
             elif hasattr(self.orchestrator, 'process_query'):
+                logger.info("Using process_query fallback")
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
                 result = loop.run_until_complete(self.orchestrator.process_query(query))
                 loop.close()
-                result['query'] = query
-                return result
             else:
-                return {"answer": "Method not found", "strategy": "Error", "confidence": 0.0, "query": query}
-                
+                logger.error("No processing method found")
+                return {"answer": "No processing method available", "strategy": "Error", "confidence": 0.0, "query": query}
+            
+            # Track run ID for feedback
+            run_id = result.get('langsmith_run_id')
+            if run_id and run_id not in self.session_run_ids:
+                self.session_run_ids.append(run_id)
+            
+            # Ensure query is in result
+            result['query'] = query
+            
+            logger.info(f"Query processing completed successfully: {result.get('strategy', 'unknown')}")
+            return result
+            
         except Exception as e:
             logger.error(f"Query processing failed: {e}")
             return {
@@ -545,15 +587,23 @@ class StreamlitRAGApp:
                 "reasoning": f"Error: {str(e)}",
                 "query": query
             }
+        
+        finally:
+            # Remove query from processing set
+            self._processing_queries.discard(query_hash)
+
             
     def render_evaluation_metrics(self, response: Dict[str, Any]):
-        """Render evaluation metrics in a horizontal row using inline-block for true horizontal layout"""
+        """Render all LangSmith evaluation metrics in a prominent section"""
         evaluation = response.get('evaluation', {})
         if not evaluation:
             return
-        st.markdown('<div style="margin-top:1.5rem;background:#f4f8fb;border-radius:10px;padding:1.2rem 1.5rem;box-shadow:0 1px 4px rgba(0,0,0,0.04);">', unsafe_allow_html=True)
-        st.markdown('<div style="font-size:1.15rem;color:#1f77b4;font-weight:600;margin-bottom:0.7rem;">Evaluation Metrics</div>', unsafe_allow_html=True)
-        st.markdown('<div style="width:100%;text-align:center;">', unsafe_allow_html=True)
+        st.markdown('''
+        <div style="margin-top:1.5rem;background:#f4f8fb;border-radius:10px;padding:1.2rem 1.5rem;box-shadow:0 1px 4px rgba(0,0,0,0.04);">
+            <div style="font-size:1.15rem;color:#1f77b4;font-weight:600;margin-bottom:0.7rem;">📊 LangSmith Evaluation Metrics</div>
+        ''', unsafe_allow_html=True)
+        # Display main metrics in a row
+        col1, col2, col3, col4, col5 = st.columns(5)
         metrics = [
             ("Overall Score", evaluation.get("overall_score", 0)),
             ("Relevance", evaluation.get("relevance_score", 0)),
@@ -561,23 +611,79 @@ class StreamlitRAGApp:
             ("Completeness", evaluation.get("completeness_score", 0)),
             ("Hallucination Risk", evaluation.get("hallucination_score", 0)),
         ]
-        metric_html = ""
-        for label, value in metrics:
-            metric_html += f'''<div style="display:inline-block;width:18%;min-width:120px;margin:0 0.5%;vertical-align:top;background:#fff;border-radius:8px;padding:0.7rem 0.2rem;box-shadow:0 1px 2px rgba(0,0,0,0.03);">
-                <div style="font-size:1.02rem;color:#555;font-weight:500;">{label}</div>
-                <div style="font-size:1.18rem;font-weight:700;margin-top:0.3rem;">{value:.2f}</div>
-            </div>'''
-        st.markdown(metric_html, unsafe_allow_html=True)
-        st.markdown('</div></div>', unsafe_allow_html=True)
-    
+        for col, (label, value) in zip([col1, col2, col3, col4, col5], metrics):
+            with col:
+                color = "#28a745" if value >= 0.7 else "#ffc107" if value >= 0.5 else "#dc3545"
+                if label == "Hallucination Risk":
+                    color = "#dc3545" if value > 0.3 else "#28a745"
+                st.markdown(f'''
+                <div style="text-align:center;background:#fff;border-radius:8px;padding:0.7rem 0.2rem;box-shadow:0 1px 2px rgba(0,0,0,0.03);">
+                    <div style="font-size:0.9rem;color:#555;font-weight:500;">{label}</div>
+                    <div style="font-size:1.3rem;font-weight:700;margin-top:0.3rem;color:{color};">{value:.2f}</div>
+                </div>
+                ''', unsafe_allow_html=True)
+        # Show explanation if available
+        explanation = evaluation.get("explanation", "")
+        if explanation:
+            st.markdown(f'''
+            <div style="margin-top:1rem;font-style:italic;color:#666;">
+                <strong>Evaluation Details:</strong> {explanation}
+            </div>
+            ''', unsafe_allow_html=True)
+        # Show any additional LangSmith metrics
+        extra_keys = [k for k in evaluation.keys() if k not in {"overall_score", "relevance_score", "accuracy_score", "completeness_score", "hallucination_score", "explanation"}]
+        if extra_keys:
+            st.markdown('<div style="margin-top:1rem;">', unsafe_allow_html=True)
+            for k in extra_keys:
+                st.markdown(f'<span style="color:#1f77b4;font-weight:600;">{k}:</span> {evaluation[k]}', unsafe_allow_html=True)
+            st.markdown('</div>', unsafe_allow_html=True)
+        st.markdown('</div>', unsafe_allow_html=True)
+
     def render_response(self, response: Dict[str, Any]):
-        """Render the response in Claude-style chat bubbles, with organized backend info and aggregation query display"""
+        """Render the response with LangSmith metrics at the top, and warn if missing"""
         if not response:
             return
+        # Main chat container
         st.markdown('<div class="chat-container">', unsafe_allow_html=True)
-        # --- Professional backend info layout ---
+        # User query bubble
+        query = response.get('query', 'Unknown query')
+        st.markdown(f'''
+        <div class="chat-bubble user">
+            <div class="chat-meta">You asked:</div>
+            {query}
+        </div>
+        ''', unsafe_allow_html=True)
+        # AI response bubble  
+        answer = response.get('answer', 'No answer provided')
+        if response.get('strategy') == 'SQL Aggregation' and 'Analysis:' in answer:
+            # Extract only the analysis part
+            analysis_start = answer.find('Analysis:')
+            if analysis_start != -1:
+                answer = answer[analysis_start:]
+                
+        st.markdown(f'''
+        <div class="chat-bubble ai">
+            <div class="chat-meta">SQL RAG Query Engine:</div>
+            {answer}
+        </div>
+        ''', unsafe_allow_html=True)
+        st.markdown('</div>', unsafe_allow_html=True)
+        
+        # FIXED: SQL execution display
+        if response.get('generated_sql') or response.get('sql_query'):
+            self.render_sql_execution_display(response)
+        
+        # Show LangSmith metrics at the top, or warn if missing
+        evaluation = response.get('evaluation', None)
+        if evaluation:
+            self.render_evaluation_metrics(response)
+        else:
+            st.warning("No LangSmith metrics found in response. Check orchestrator and evaluation logic.")
+            st.expander("Debug: Full Response").write(response)
+        # Backend info layout
         st.markdown('<div style="max-width:700px;margin:2rem auto 0 auto;">', unsafe_allow_html=True)
-        # Metrics block in horizontal row
+        
+        # Strategy metrics
         st.markdown('<div style="width:100%;text-align:center;">', unsafe_allow_html=True)
         metrics = [
             ("Strategy", response.get('strategy', 'Unknown')),
@@ -592,54 +698,33 @@ class StreamlitRAGApp:
             </div>'''
         st.markdown(metric_html, unsafe_allow_html=True)
         st.markdown('</div>', unsafe_allow_html=True)
-        # --- Aggregation Query Display ---
-        sql_query = response.get('sql_query') or response.get('generated_sql')
-        aggregation_output = response.get('aggregation_output')
-        if sql_query:
-            st.markdown('<div style="margin-top:1.5rem;background:#fff;border-radius:10px;padding:1.2rem 1.5rem;box-shadow:0 1px 4px rgba(0,0,0,0.04);">', unsafe_allow_html=True)
-            st.markdown('<div style="font-size:1.12rem;color:#1f77b4;font-weight:600;margin-bottom:0.7rem;">SQL Query Generated</div>', unsafe_allow_html=True)
-            st.code(sql_query, language="sql")
-            st.markdown('</div>', unsafe_allow_html=True)
-        # Show aggregation output (table or formatted result) after execution
-        if aggregation_output:
-            st.markdown('<div style="margin-top:1.2rem;background:#f4f8fb;border-radius:10px;padding:1.2rem 1.5rem;box-shadow:0 1px 4px rgba(0,0,0,0.04);">', unsafe_allow_html=True)
-            st.markdown('<div style="font-size:1.12rem;color:#1f77b4;font-weight:600;margin-bottom:0.7rem;">Query Results</div>', unsafe_allow_html=True)
-            st.markdown(aggregation_output, unsafe_allow_html=True)
-            st.markdown('</div>', unsafe_allow_html=True)
-        # Show results and insights (text summary)
-        if response.get('aggregation_result'):
-            st.markdown('<div style="margin-top:1.2rem;background:#f4f8fb;border-radius:10px;padding:1.2rem 1.5rem;box-shadow:0 1px 4px rgba(0,0,0,0.04);">', unsafe_allow_html=True)
-            st.markdown('<div style="font-size:1.12rem;color:#1f77b4;font-weight:600;margin-bottom:0.7rem;">Insights</div>', unsafe_allow_html=True)
-            st.markdown(response['aggregation_result'], unsafe_allow_html=True)
-            st.markdown('</div>', unsafe_allow_html=True)
-        
-        if sql_query:
-            self.render_sql_execution_flow(response)
         # Analysis and sources
         gen_context = response.get('generation_context', {})
         if gen_context:
             self.render_detailed_analysis(response)
+        
         if response.get('sources'):
             self.render_sources(response['sources'])
+        
         st.markdown('</div>', unsafe_allow_html=True)
+        
         # Feedback widget
-        query = response.get('query', st.session_state.get('query_input', ''))
-        answer = response.get('answer', '')
         run_id = response.get('langsmith_run_id')
         feedback_result = self.feedback_widget.render_feedback_widget(
             query=query,
             answer=answer,
             run_id=run_id
         )
-        # Query history expander at the end
+        # Show Query History at the end
         if st.session_state.query_history:
             with st.expander("Show Query History", expanded=False):
                 for i, entry in enumerate(reversed(st.session_state.query_history[-5:]), 1):
                     st.markdown(f"**Query {i}:** {entry.get('query', 'Unknown')}")
                     st.markdown(f"**Strategy:** {entry.get('strategy', 'Unknown')}")
                     st.markdown(f"**Confidence:** {entry.get('confidence', 0.0):.2%}")
+                    st.markdown(f"**Answer:** {entry.get('answer', '')}")
                     st.markdown("---")
-    
+        
     def render_detailed_analysis(self, response: Dict[str, Any]):
         """Render detailed analysis of the generation decision"""
         st.subheader("📈 Analysis Details")
@@ -728,27 +813,110 @@ class StreamlitRAGApp:
         if raw_results and len(raw_results) <= 10:
             st.markdown("### 📋 Query Results")
             st.dataframe(pd.DataFrame(raw_results))
+    
+    
+    def render_sql_execution_display(self, response: Dict[str, Any]):
+        """FIXED: Properly display SQL execution results"""
+        sql_query = response.get('generated_sql') or response.get('sql_query')
+        sql_details = response.get('sql_details', {})
+        raw_results = response.get('raw_results', [])
+        aggregation_output = response.get('aggregation_output', '')
         
+        if not sql_query:
+            return
+        
+        # SQL Query Display
+        st.markdown('''
+        <div style="margin-top:1.5rem;background:#fff;border-radius:10px;padding:1.2rem 1.5rem;box-shadow:0 1px 4px rgba(0,0,0,0.04);">
+            <div style="font-size:1.12rem;color:#1f77b4;font-weight:600;margin-bottom:0.7rem;">Generated SQL Query</div>
+        </div>
+        ''', unsafe_allow_html=True)
+        st.code(sql_query, language="sql")
+        
+        # Execution Status
+        if sql_details.get('success', False):
+            execution_time = sql_details.get('execution_time', 0)
+            rows_returned = sql_details.get('rows_returned', 0)
+            st.success(f"Query executed successfully in {execution_time:.3f}s - {rows_returned} rows returned")
+            
+            # Show results table if available
+            if raw_results:
+                st.markdown('''
+                <div style="margin-top:1.2rem;background:#f4f8fb;border-radius:10px;padding:1.2rem 1.5rem;box-shadow:0 1px 4px rgba(0,0,0,0.04);">
+                    <div style="font-size:1.12rem;color:#1f77b4;font-weight:600;margin-bottom:0.7rem;">Query Results</div>
+                </div>
+                ''', unsafe_allow_html=True)
+                
+                # Convert to DataFrame and display
+                try:
+                    df = pd.DataFrame(raw_results)
+                    st.dataframe(df, use_container_width=True)
+                except Exception as e:
+                    st.error(f"Error displaying results: {e}")
+                    st.write(raw_results)
+            
+            # Show business-friendly output
+            if aggregation_output:
+                st.markdown('''
+                <div style="margin-top:1.2rem;background:#e8f4fd;border-radius:10px;padding:1.2rem 1.5rem;box-shadow:0 1px 4px rgba(0,0,0,0.04);">
+                    <div style="font-size:1.12rem;color:#1f77b4;font-weight:600;margin-bottom:0.7rem;">Business Summary</div>
+                </div>
+                ''', unsafe_allow_html=True)
+                st.markdown(aggregation_output)
+                
+        elif sql_details.get('error'):
+            st.error(f"Query execution failed: {sql_details.get('error', 'Unknown error')}")
+        else:
+            st.warning("Query execution status unknown")
+          
     def run(self):
-        """Main application runner with Claude-style layout"""
-        # Remove header and extra UI for minimal look
+        """FIXED: Main application runner with duplicate prevention"""
+        
         if not self.render_system_status():
             return
+            
         if not st.session_state.initialized:
-            with st.spinner("🔄 Loading RAG System..."):
+            with st.spinner("Loading RAG System..."):
                 self.orchestrator = self.load_system()
                 st.session_state.initialized = True
         else:
             self.orchestrator = self.load_system()
-        # Remove sidebar and extra headers for minimal look
+        
+        # Get query input
         query, submit_button = self.render_query_interface()
+        
+        # CRITICAL FIX: Prevent duplicate processing
         if submit_button and query.strip():
-            with st.spinner("🤔 Processing your query..."):
-                response = self.process_query_safe(query.strip())
-                st.session_state.current_response = response
-                st.session_state.query_history.append(response)
+            # Check if this query was just processed
+            if (hasattr(st.session_state, 'last_processed_query') and 
+                st.session_state.last_processed_query == query.strip()):
+                st.warning("This query was just processed. Please wait or try a different query.")
+                return
+            
+            # Mark query as being processed
+            st.session_state.last_processed_query = query.strip()
+            
+            with st.spinner("Processing your query..."):
+                try:
+                    response = self.process_query_safe(query.strip())
+                    st.session_state.current_response = response
+                    st.session_state.query_history.append(response)
+                    
+                    # Clear the last processed query after successful processing
+                    if 'last_processed_query' in st.session_state:
+                        del st.session_state.last_processed_query
+                        
+                except Exception as e:
+                    logger.error(f"Error in query processing: {e}")
+                    st.error(f"An error occurred: {e}")
+                    # Clear the processing flag on error too
+                    if 'last_processed_query' in st.session_state:
+                        del st.session_state.last_processed_query
+        
+        # Render current response
         if st.session_state.current_response:
             self.render_response(st.session_state.current_response)
+            
 def main():
     """Main function to run the Streamlit app"""
     try:
