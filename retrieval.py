@@ -453,6 +453,18 @@ class HybridRetriever:
         """Analyze schemas of all tables in the vector store"""
         if not self.vector_store:
             return
+
+        # Prevent re-analysis in Streamlit
+        if hasattr(self, '_streamlit_initialized'):
+            cache_key = f"_schemas_analyzed_{'meta' if use_metadata else 'basic'}"
+            if hasattr(self, cache_key) and getattr(self, cache_key):
+                logger.info(f"Skipping schema analysis (already done: {cache_key})")
+                return
+        
+        # Set the cache flag
+        if hasattr(self, '_streamlit_initialized'):
+            cache_key = f"_schemas_analyzed_{'meta' if use_metadata else 'basic'}"
+            setattr(self, cache_key, True)
         # Ensure metadata definitions are loaded only for aggregation queries
         
         if use_metadata:
