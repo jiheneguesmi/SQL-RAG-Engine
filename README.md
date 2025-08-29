@@ -1,4 +1,4 @@
-
+<img width="1736" height="803" alt="Capture d'écran 2025-08-29 113401" src="https://github.com/user-attachments/assets/165b0f21-3350-4828-ae32-88796ae6d31e" /><img width="1888" height="579" alt="Capture d'écran 2025-08-29 111814" src="https://github.com/user-attachments/assets/8de28e4f-1759-4bcd-a27f-5860dcbaaa04" /><img width="1806" height="764" alt="Capture d'écran 2025-08-29 111830" src="https://github.com/user-attachments/assets/6f5ef4ef-62ea-405c-9a5f-c2ca15573141" />
 # Advanced RAG System with Intelligent Generation Orchestration
 
 ## Overview
@@ -858,7 +858,14 @@ results = retriever.retrieve("query", explain_results=True)
 - LangChain for document processing utilities
 - FAISS for efficient vector similarity search
 - Pandas for data manipulation and processing
+<img width="1828" height="526" alt="Capture d'écran 2025-08-29 113351" src="https://github.com/user-attachments/assets/fd5c28fa-3d43-4ad8-866f-4671af274b78" /><img width="1837" height="464" alt="Capture d'écran 2025-08-29 113311" src="https://github.com/user-attachments/assets/37e70abe-5ffd-470a-bc1d-3af60cde5cbe" />
+<img width="1808" height="731" alt="Capture d'écran 2025-08-29 113318" src="https://github.com/user-attachments/assets/a063f0b6-8648-465e-9782-9c1a617b7b6e" />
+<img width="1848" height="730" alt="Capture d'écran 2025-08-29 113331" src="https://github.com/user-attachments/assets/75e4eb04-40b6-4225-bc88-e8bd82e4dc57" />
+<img width="1230" height="425" alt="Capture d'écran 2025-08-29 113339" src="https://github.com/user-attachments/assets/03de285c-c993-40b5-b765-2a02dbd47a0d" />
 
-<img width="1806" height="764" alt="Capture d'écran 2025-08-29 111830" src="https://github.com/user-attachments/assets/701b7291-753a-42cb-9d63-20fc3696b55a" />
+<img width="1799" height="587" alt="Capture d'écran 2025-08-29 112807" src="https://github.com/user-attachments/assets/d071432a-2283-4e1f-a130-540b89da11d1" />
+<img width="1613" height="753" alt="Capture d'écran 2025-08-29 112819" src="https://github.com/user-attachments/assets/00dd0a05-1c1e-4ecc-8e9b-73fdcd7063d7" />
+<img width="1867" height="760" alt="Capture d'écran 2025-08-29 113041" src="https://github.com/user-attachments/assets/88e2df2d-b0d8-4ed5-9167-3b9eac9031bd" />
+<img width="1410" height="358" alt="Capture d'écran 2025-08-29 113057" src="https://github.com/user-attachments/assets/ff4796a6-bd15-4d72-a730-87031b5f1feb" />
+<img width="1845" height="487" alt="Capture d'écran 2025-08-29 113303" src="https://github.com/user-attachments/assets/b47bb5a1-2922-498f-a5c5-c0f95f6a448d" />
 
-  
